@@ -1,0 +1,13 @@
+[service]
+port = 45557
+
+[event_store]
+host = "0.0.0.0:32803"
+cluster_id = "test-cluster"
+
+[signal_server]
+host = "0.0.0.0:32803"
+
+[supervisor]
+protocol = "grpc"
+host = "0.0.0.0:45556"
