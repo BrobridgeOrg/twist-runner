@@ -53,8 +53,6 @@ func (t *Transaction) InitEventHandler() error {
 	sb := t.App.GetSignalBus()
 	sub, err := sb.QueueSubscribe("twist.transaction."+t.ID+".cmdReceived", "twist-runner", func(msg *nats.Msg) {
 
-		log.Info("Received command")
-
 		var command pb.TransactionCommand
 		err := proto.Unmarshal(msg.Data, &command)
 		if err != nil {
@@ -62,7 +60,22 @@ func (t *Transaction) InitEventHandler() error {
 			return
 		}
 
+		log.WithFields(log.Fields{
+			"id":  t.ID,
+			"cmd": command.Command,
+		}).Info("Received command")
+
 		switch command.Command {
+		case "registerTasks":
+			var request pb.RegisterTasksRequest
+			err := ptypes.UnmarshalAny(command.Payload, &request)
+			if err != nil {
+				log.Warn(err)
+				return
+			}
+
+			t.RegisterTasks(request.Tasks)
+
 		case "confirm":
 			var request pb.ConfirmTransactionRequest
 			err := ptypes.UnmarshalAny(command.Payload, &request)
@@ -71,7 +84,10 @@ func (t *Transaction) InitEventHandler() error {
 				return
 			}
 
-			t.ConfirmRequest(&request)
+			t.RegisterTasks(request.Tasks)
+
+			// Start to do action
+			t.PreConfirm()
 
 		case "cancel":
 			t.Cancel()
@@ -150,10 +166,10 @@ func (t *Transaction) Run() {
 	err = sb.Emit("twist.transaction."+t.ID+".eventEmitted", data)
 }
 
-func (t *Transaction) ConfirmRequest(request *pb.ConfirmTransactionRequest) {
+func (t *Transaction) RegisterTasks(tasks []*pb.TransactionTask) {
 
 	// Loading all tasks
-	for _, transactionTask := range request.Tasks {
+	for _, transactionTask := range tasks {
 
 		task := CreateTask()
 
@@ -176,8 +192,25 @@ func (t *Transaction) ConfirmRequest(request *pb.ConfirmTransactionRequest) {
 		t.RegisterTask(task)
 	}
 
-	// Start to do action
-	t.PreConfirm()
+	// Getting application ID
+	idStr := strconv.FormatUint(t.App.GetID(), 16)
+
+	// Prepare event
+	event := &pb.TransactionEvent{
+		TransactionID: t.ID,
+		RunnerID:      idStr,
+		EventName:     "TasksRegistered",
+		Payload:       "",
+	}
+
+	data, err := proto.Marshal(event)
+	if err != nil {
+		return
+	}
+
+	// Emit event
+	sb := t.App.GetSignalBus()
+	err = sb.Emit("twist.transaction."+t.ID+".eventEmitted", data)
 }
 
 func (t *Transaction) RegisterTask(task *Task) {
@@ -263,6 +296,7 @@ func (t *Transaction) Cancel() {
 		"tasks": len(t.Tasks),
 	}).Info("Cancel transaction")
 
+	// Cancel all tasks
 	for _, task := range t.Tasks {
 		t.WaitGroup.Add(1)
 
@@ -277,4 +311,24 @@ func (t *Transaction) Cancel() {
 	t.WaitGroup.Wait()
 
 	t.Done()
+
+	// Getting application ID
+	idStr := strconv.FormatUint(t.App.GetID(), 16)
+
+	// Prepare event
+	event := &pb.TransactionEvent{
+		TransactionID: t.ID,
+		RunnerID:      idStr,
+		EventName:     "Canceled",
+		Payload:       "",
+	}
+
+	data, err := proto.Marshal(event)
+	if err != nil {
+		return
+	}
+
+	// Emit event
+	sb := t.App.GetSignalBus()
+	err = sb.Emit("twist.transaction."+t.ID+".eventEmitted", data)
 }
